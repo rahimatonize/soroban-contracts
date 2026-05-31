@@ -183,3 +183,85 @@ fn test_operations_resume_after_unpause() {
     token.transfer(&user, &other, &200);
     assert_eq!(token.balance(&other), 200);
 }
+
+// ── Pause / unpause ───────────────────────────────────────────────────────────
+
+#[test]
+fn test_paused_initially_false() {
+    let (_env, token, _, _, _) = setup();
+    assert!(!token.paused());
+}
+
+#[test]
+fn test_admin_pause_and_unpause() {
+    let (_env, token, admin, _, _) = setup();
+    token.admin_pause(&admin);
+    assert!(token.paused());
+    token.admin_unpause(&admin);
+    assert!(!token.paused());
+}
+
+#[test]
+fn test_pause_emits_event() {
+    let (env, token, admin, _, _) = setup();
+    let before = env.events().all().len();
+    token.admin_pause(&admin);
+    assert!(env.events().all().len() > before);
+}
+
+#[test]
+fn test_unpause_emits_event() {
+    let (env, token, admin, _, _) = setup();
+    token.admin_pause(&admin);
+    let before = env.events().all().len();
+    token.admin_unpause(&admin);
+    assert!(env.events().all().len() > before);
+}
+
+#[test]
+fn test_pause_by_non_admin_returns_error() {
+    let (env, token, _, _, _) = setup();
+    let rando = Address::generate(&env);
+    let result = token.try_admin_pause(&rando);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_mint_when_paused_returns_error() {
+    let (_env, token, admin, verifier, user) = setup();
+    token.admin_pause(&admin);
+    let result = token.try_mint(&verifier, &user, &1000);
+    assert_eq!(result, Err(Ok(Error::ContractPaused)));
+}
+
+#[test]
+fn test_transfer_when_paused_returns_error() {
+    let (env, token, admin, verifier, user) = setup();
+    token.mint(&verifier, &user, &500);
+    token.admin_pause(&admin);
+    let other = Address::generate(&env);
+    let result = token.try_transfer(&user, &other, &100);
+    assert_eq!(result, Err(Ok(Error::ContractPaused)));
+}
+
+#[test]
+fn test_burn_when_paused_returns_error() {
+    let (_env, token, admin, verifier, user) = setup();
+    token.mint(&verifier, &user, &500);
+    token.admin_pause(&admin);
+    let result = token.try_burn(&user, &100);
+    assert_eq!(result, Err(Ok(Error::ContractPaused)));
+}
+
+#[test]
+fn test_operations_resume_after_unpause() {
+    let (env, token, admin, verifier, user) = setup();
+    token.admin_pause(&admin);
+    token.admin_unpause(&admin);
+    // should succeed after unpause
+    token.mint(&verifier, &user, &500);
+    assert_eq!(token.balance(&user), 500);
+    let other = Address::generate(&env);
+    token.transfer(&user, &other, &200);
+    assert_eq!(token.balance(&other), 200);
+}
