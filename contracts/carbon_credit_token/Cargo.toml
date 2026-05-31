@@ -4,6 +4,12 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 
+[features]
+testutils = ["soroban-sdk/testutils"]
+
+[lints]
+workspace = true
+
 [lib]
 crate-type = ["cdylib", "rlib"]
 doctest = false
@@ -14,3 +20,4 @@ rbac        = { path = "../rbac" }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }
+rbac        = { path = "../rbac", features = ["testutils"] }

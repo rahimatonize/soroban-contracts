@@ -3,6 +3,12 @@ name = "escrow"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+testutils = ["soroban-sdk/testutils"]
+
+[lints]
+workspace = true
+
 [dependencies]
 soroban-sdk = { workspace = true }
 carbon_credit_token = { path = "../carbon_credit_token" }
@@ -13,4 +19,4 @@ doctest = false
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }
-carbon_credit_token = { path = "../carbon_credit_token" }
+carbon_credit_token = { path = "../carbon_credit_token", features = ["testutils"] }

@@ -59,7 +59,7 @@ fn test_register_verifier_by_super_admin() {
 
     // Verify the verifier is registered
     assert!(registry.is_verifier_active(&verifier));
-    
+
     // Verify the profile
     let profile = registry.get_verifier_profile(&verifier);
     assert!(profile.is_some());

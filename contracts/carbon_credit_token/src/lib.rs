@@ -3,15 +3,21 @@
 mod admin;
 mod allowance;
 mod balance;
+mod certificate;
 mod error;
 mod events;
 mod metadata;
 mod rbac;
+mod retirement;
 mod storage;
+
 #[cfg(test)]
 mod test;
 
-use soroban_sdk::{contract, contractimpl, Address, Bytes, Env, String};
+#[cfg(test)]
+mod integration_test;
+
+use soroban_sdk::{contract, contractimpl, Address, Bytes, Env, String, Vec};
 
 use crate::admin::{
     blacklist_address, grant_verifier, is_blacklisted, is_verifier, read_administrator,
@@ -19,19 +25,26 @@ use crate::admin::{
 };
 use crate::allowance::{read_allowance, spend_allowance, write_allowance};
 use crate::balance::{read_balance, receive_balance, spend_balance};
+use crate::certificate::{
+    increment_next_certificate_id, read_certificate, read_next_certificate_id, write_certificate,
+    CertificateRecord,
+};
+use crate::retirement::{
+    increment_next_retirement_id, read_retirement, write_retirement, RetirementRecord,
+};
 use crate::error::Error;
 use crate::events::{
-    ApproveEvent, BurnEvent, CertificateGeneratedEvent, MintEvent, RetirementEvent, TransferEvent,
+    ApproveEvent, BurnEvent, CertificateMintedEvent, MintEvent, RetirementEvent, TransferEvent,
 };
-
-use crate::metadata::{read_decimals, read_name, read_symbol, write_metadata};
+use crate::metadata::{
+    read_decimals, read_name, read_project_location, read_project_metadata_url, read_project_name,
+    read_project_vintage, read_symbol, write_metadata, write_project_info,
+};
 use crate::rbac::require_verifier;
 use crate::storage::{
-    increment_certificate_count, is_initialized, is_report_hash_used, mark_report_hash_used, read_total_retired,
-    read_total_supply, set_initialized, write_rbac_contract, write_total_retired,
-    write_total_supply, INSTANCE_BUMP_AMOUNT, INSTANCE_LIFETIME_THRESHOLD, OffsetCertificate,
+    is_initialized, read_total_retired, read_total_supply, set_initialized, write_rbac_contract,
+    write_total_retired, write_total_supply, INSTANCE_BUMP_AMOUNT, INSTANCE_LIFETIME_THRESHOLD,
 };
-
 
 fn check_nonnegative_amount(amount: i128) -> Result<(), Error> {
     if amount < 0 {
@@ -54,8 +67,7 @@ pub struct CarbonCreditToken;
 
 #[contractimpl]
 impl CarbonCreditToken {
-    /// Initializes the contract with admin/super-admin, RBAC and metadata.
-    /// Can only be called once.
+    /// Initializes the contract with admin roles, RBAC address, and metadata.
     pub fn initialize(
         env: Env,
         admin: Address,
@@ -63,6 +75,10 @@ impl CarbonCreditToken {
         name: String,
         symbol: String,
         decimals: u32,
+        project_name: String,
+        vintage: String,
+        location: String,
+        metadata_url: String,
     ) -> Result<(), Error> {
         if is_initialized(&env) {
             return Err(Error::AlreadyInitialized);
@@ -75,6 +91,8 @@ impl CarbonCreditToken {
         write_metadata(&env, name, symbol, decimals);
         write_total_supply(&env, 0);
         write_total_retired(&env, 0);
+        write_project_info(&env, project_name, vintage, location, metadata_url);
+
         Ok(())
     }
 
@@ -132,6 +150,43 @@ impl CarbonCreditToken {
         Ok(())
     }
 
+    pub fn add_to_blacklist_batch(env: Env, admin: Address, accounts: Vec<Address>) -> Result<(), Error> {
+        admin.require_auth();
+        if admin != read_super_admin(&env) {
+            return Err(Error::Unauthorized);
+        }
+
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+
+        for account in accounts.iter() {
+            if account == admin {
+                return Err(Error::CannotBlacklistSelf);
+            }
+            blacklist_address(&env, &account);
+        }
+
+        Ok(())
+    }
+
+    pub fn remove_from_blacklist_batch(env: Env, admin: Address, accounts: Vec<Address>) -> Result<(), Error> {
+        admin.require_auth();
+        if admin != read_super_admin(&env) {
+            return Err(Error::Unauthorized);
+        }
+
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+
+        for account in accounts.iter() {
+            unblacklist_address(&env, &account);
+        }
+
+        Ok(())
+    }
+
     pub fn transfer_super_admin(env: Env, successor: Address) -> Result<(), Error> {
         let super_admin = read_super_admin(&env);
         super_admin.require_auth();
@@ -148,9 +203,27 @@ impl CarbonCreditToken {
         Ok(())
     }
 
+    /// Proactively extends TTL for all critical instance storage. Admin only.
+    pub fn extend_ttl(env: Env) -> Result<(), Error> {
+        let super_admin = read_super_admin(&env);
+        super_admin.require_auth();
+
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+
+        Ok(())
+    }
+
     // ── Token operations ──────────────────────────────────────────────────────
 
-    pub fn mint(env: Env, verifier: Address, to: Address, amount: i128, report_hash: Bytes) -> Result<(), Error> {
+    pub fn mint(
+        env: Env,
+        verifier: Address,
+        to: Address,
+        amount: i128,
+        report_hash: Bytes,
+    ) -> Result<(), Error> {
         check_nonnegative_amount(amount)?;
         require_not_blacklisted(&env, &verifier)?;
         require_not_blacklisted(&env, &to)?;
@@ -161,10 +234,10 @@ impl CarbonCreditToken {
             .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
 
-        if is_report_hash_used(&env, &report_hash) {
+        if crate::storage::is_report_hash_used(&env, &report_hash) {
             return Err(Error::ReportHashUsed);
         }
-        mark_report_hash_used(&env, &report_hash);
+        crate::storage::mark_report_hash_used(&env, &report_hash);
 
         receive_balance(&env, to.clone(), amount);
 
@@ -175,8 +248,6 @@ impl CarbonCreditToken {
         Ok(())
     }
 
-
-    /// Transfers tokens between addresses.
     pub fn transfer(env: Env, from: Address, to: Address, amount: i128) -> Result<(), Error> {
         from.require_auth();
         check_nonnegative_amount(amount)?;
@@ -219,12 +290,15 @@ impl CarbonCreditToken {
         Ok(())
     }
 
+    /// Retires tokens and mints a Soulbound NFT certificate.
     pub fn retire(
         env: Env,
         from: Address,
         amount: i128,
-        report_hash: Bytes,
-        methodology: String,
+        _report_hash: Bytes,
+        _methodology: String,
+        reason: String,
+        beneficiary: String,
     ) -> Result<(), Error> {
         from.require_auth();
         check_nonnegative_amount(amount)?;
@@ -248,28 +322,45 @@ impl CarbonCreditToken {
 
         let timestamp = env.ledger().timestamp();
 
-        let cert_id = increment_certificate_count(&env);
-        let certificate = OffsetCertificate {
+        // Store on-chain retirement record
+        let retirement_id = increment_next_retirement_id(&env);
+        write_retirement(
+            &env,
+            RetirementRecord {
+                id: retirement_id,
+                retiree: from.clone(),
+                amount,
+                timestamp,
+                reason,
+                beneficiary,
+            },
+        );
+
+        // Mint Soulbound NFT Certificate
+        let cert_id = increment_next_certificate_id(&env);
+        let cert = CertificateRecord {
             id: cert_id,
+            owner: from.clone(),
             amount,
             timestamp,
+            project_name: read_project_name(&env),
+            vintage: read_project_vintage(&env),
+            location: read_project_location(&env),
+            metadata_url: read_project_metadata_url(&env),
         };
-        write_certificate(&env, from.clone(), certificate);
+        write_certificate(&env, cert);
 
         RetirementEvent {
             from: from.clone(),
             amount,
             timestamp,
-            report_hash,
-            methodology,
         }
         .publish(&env);
 
-        CertificateGeneratedEvent {
-            certificate_id: cert_id,
-            corporate: from.clone(),
+        CertificateMintedEvent {
+            id: cert_id,
+            owner: from.clone(),
             amount,
-            timestamp,
         }
         .publish(&env);
 
@@ -278,8 +369,6 @@ impl CarbonCreditToken {
         Ok(())
     }
 
-
-    /// Burns tokens (SEP-41 standard).
     pub fn burn(env: Env, from: Address, amount: i128) -> Result<(), Error> {
         from.require_auth();
         check_nonnegative_amount(amount)?;
@@ -298,12 +387,7 @@ impl CarbonCreditToken {
         Ok(())
     }
 
-    pub fn burn_from(
-        env: Env,
-        spender: Address,
-        from: Address,
-        amount: i128,
-    ) -> Result<(), Error> {
+    pub fn burn_from(env: Env, spender: Address, from: Address, amount: i128) -> Result<(), Error> {
         spender.require_auth();
         check_nonnegative_amount(amount)?;
         require_not_blacklisted(&env, &spender)?;
@@ -333,6 +417,7 @@ impl CarbonCreditToken {
         from.require_auth();
         check_nonnegative_amount(amount)?;
         require_not_blacklisted(&env, &from)?;
+        require_not_blacklisted(&env, &spender)?;
 
         env.storage()
             .instance()
@@ -356,25 +441,13 @@ impl CarbonCreditToken {
         Ok(())
     }
 
-    pub fn is_verifier(env: Env, addr: Address) -> bool {
-        is_verifier(&env, &addr)
-    }
-
-    pub fn is_blacklisted(env: Env, addr: Address) -> bool {
-        is_blacklisted(&env, &addr)
-    }
+    // ── Inspection View Functions ─────────────────────────────────────────────
 
     pub fn balance(env: Env, id: Address) -> i128 {
-        env.storage()
-            .instance()
-            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
         read_balance(&env, id)
     }
 
     pub fn allowance(env: Env, from: Address, spender: Address) -> i128 {
-        env.storage()
-            .instance()
-            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
         read_allowance(&env, from, spender)
     }
 
@@ -384,10 +457,6 @@ impl CarbonCreditToken {
 
     pub fn total_retired(env: Env) -> i128 {
         read_total_retired(&env)
-    }
-
-    pub fn rbac_contract(env: Env) -> Address {
-        crate::storage::read_rbac_contract(&env)
     }
 
     pub fn name(env: Env) -> String {
@@ -402,17 +471,27 @@ impl CarbonCreditToken {
         read_decimals(&env)
     }
 
+    pub fn get_certificate(env: Env, id: u32) -> Option<CertificateRecord> {
+        read_certificate(&env, id)
+    }
+
+    pub fn get_retirement(env: Env, id: u64) -> Option<RetirementRecord> {
+        read_retirement(&env, id)
+    }
+
+    pub fn certificate_count(env: Env) -> u32 {
+        read_next_certificate_id(&env)
+    }
+
     pub fn admin(env: Env) -> Address {
         read_administrator(&env)
     }
 
-    /// Returns the list of certificates for a corporate address.
-    pub fn get_certificates(env: Env, corporate: Address) -> soroban_sdk::Vec<OffsetCertificate> {
-        read_certificates(&env, corporate)
+    pub fn rbac_contract(env: Env) -> Address {
+        crate::storage::read_rbac_contract(&env)
     }
 
-    /// Returns the total number of certificates issued globally.
-    pub fn get_certificate_count(env: Env) -> u64 {
-        read_certificate_count(&env)
+    pub fn is_verifier(env: Env, addr: Address) -> bool {
+        is_verifier(&env, &addr)
     }
 }

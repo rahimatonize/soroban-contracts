@@ -4,10 +4,6 @@ use crate::storage::DataKey;
 
 // ── Administrator ─────────────────────────────────────────────────────────────
 
-pub fn has_administrator(e: &Env) -> bool {
-    e.storage().instance().has(&DataKey::Admin)
-}
-
 pub fn read_administrator(e: &Env) -> Address {
     e.storage()
         .instance()
@@ -20,10 +16,6 @@ pub fn write_administrator(e: &Env, id: &Address) {
 }
 
 // ── SuperAdmin ────────────────────────────────────────────────────────────────
-
-pub fn has_super_admin(e: &Env) -> bool {
-    e.storage().instance().has(&DataKey::SuperAdmin)
-}
 
 pub fn read_super_admin(e: &Env) -> Address {
     e.storage()

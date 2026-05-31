@@ -4,8 +4,11 @@ members = [
   "contracts/*",
 ]
 
+[workspace.lints.rust]
+unexpected_cfgs = { level = "allow", check-cfg = ['cfg(feature, values("testutils"))'] }
+
 [workspace.dependencies]
-soroban-sdk = "20.3.2"
+soroban-sdk = "20.5.0"
 verifier-registry = { path = "contracts/verifier_registry" }
 carbon-credit-token = { path = "contracts/carbon_credit_token" }
 

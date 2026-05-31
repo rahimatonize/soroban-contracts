@@ -13,6 +13,7 @@ pub const VERIFIER_ROLE: &str = "Verifier";
 /// as the authority source — enabling the token contract to remain
 /// agnostic about the RBAC implementation details.
 #[contractclient(name = "RbacContractClient")]
+#[allow(dead_code)]
 pub trait RbacContractInterface {
     /// Returns `true` when `address` holds `role` in the RBAC registry.
     fn has_role(env: Env, address: Address, role: String) -> bool;

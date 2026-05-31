@@ -4,13 +4,9 @@ mod error;
 mod storage;
 
 pub use error::Error;
-use soroban_sdk::{contract, contractimpl, Address, Env, String};
+use soroban_sdk::{contract, contractimpl, Address, Env, String, Symbol, Vec};
 
-use storage::{
-    is_admin, is_super_admin, is_trader, is_verifier, read_admin, read_role, read_super_admin,
-    revoke_admin, revoke_trader, revoke_verifier, write_admin, write_role, write_super_admin,
-    INSTANCE_BUMP_AMOUNT, INSTANCE_LIFETIME_THRESHOLD,
-};
+use storage::{is_admin, read_role, read_super_admin, write_admin, write_role, write_super_admin};
 
 #[contract]
 pub struct RbacContract;
@@ -86,18 +82,74 @@ impl RbacContract {
             Some(storage::RoleType::Trader) => {
                 storage::revoke_trader(&env, &account);
                 Ok(())
-            }   
-            Some(storage::RoleType::Verifier) => {
-                revoke_verifier(&env, &account);
-                Ok(())
-            }
-            Some(storage::RoleType::Trader) => {
-                revoke_trader(&env, &account);
-                Ok(())
             }
             Some(storage::RoleType::SuperAdmin) => Err(Error::CannotRemoveSuperAdmin),
             None => Err(Error::RoleNotAssigned),
         }
+    }
+
+    // --- Batch Operations ---
+
+    pub fn assign_roles_batch(env: Env, super_admin: Address, assignments: Vec<(Address, Symbol)>) -> Result<(), Error> {
+        super_admin.require_auth();
+        if !storage::is_super_admin(&env, &super_admin) {
+            return Err(Error::Unauthorized);
+        }
+
+        for assignment in assignments.iter() {
+            let (account, role_str) = assignment;
+            let role_type = match role_str {
+                r if r == Symbol::new(&env, "Admin") => storage::RoleType::Admin,
+                r if r == Symbol::new(&env, "Verifier") => storage::RoleType::Verifier,
+                r if r == Symbol::new(&env, "Trader") => storage::RoleType::Trader,
+                _ => return Err(Error::InvalidRole),
+            };
+            write_role(&env, &account, role_type);
+            if role_type == storage::RoleType::Admin {
+                write_admin(&env, &account);
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn revoke_roles_batch(env: Env, super_admin: Address, revocations: Vec<(Address, Symbol)>) -> Result<(), Error> {
+        super_admin.require_auth();
+        if !storage::is_super_admin(&env, &super_admin) {
+            return Err(Error::Unauthorized);
+        }
+
+        for revocation in revocations.iter() {
+            let (account, role_str) = revocation;
+            if storage::is_super_admin(&env, &account) {
+                return Err(Error::CannotRemoveSuperAdmin);
+            }
+            let expected_role = match role_str {
+                r if r == Symbol::new(&env, "Admin") => storage::RoleType::Admin,
+                r if r == Symbol::new(&env, "Verifier") => storage::RoleType::Verifier,
+                r if r == Symbol::new(&env, "Trader") => storage::RoleType::Trader,
+                _ => return Err(Error::InvalidRole),
+            };
+            if let Some(current_role) = read_role(&env, &account) {
+                if current_role == expected_role {
+                    match current_role {
+                        storage::RoleType::Admin => {
+                            storage::revoke_admin(&env, &account);
+                            storage::remove_role(&env, &account);
+                        }
+                        storage::RoleType::Verifier => {
+                            storage::revoke_verifier(&env, &account);
+                        }
+                        storage::RoleType::Trader => {
+                            storage::revoke_trader(&env, &account);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        Ok(())
     }
 
     // --- Role Checks ---
@@ -133,7 +185,6 @@ impl RbacContract {
         write_super_admin(&env, &new_admin);
         write_admin(&env, &new_admin);
         write_role(&env, &new_admin, storage::RoleType::SuperAdmin);
-
 
         Ok(())
     }
